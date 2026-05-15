@@ -12,7 +12,7 @@ import { Zap } from 'lucide-react'
  *   - or a hash fragment    (implicit flow — older config)
  *
  * supabase-js detects both automatically via detectSessionInUrl: true.
- * We just need to wait for the session to be established, then redirect.
+ * We wait for the session to be established, then redirect accordingly.
  */
 export default function AuthCallbackPage() {
   const navigate = useNavigate()
@@ -22,9 +22,15 @@ export default function AuthCallbackPage() {
     if (handled.current) return
     handled.current = true
 
+    // These refs hold cleanup handles so the effect cleanup function
+    // (returned synchronously) can cancel them even if the async work
+    // hasn't finished yet.
+    let subscription = null
+    let timeout = null
+
     async function handleCallback() {
-      // Give supabase-js a moment to exchange the code for a session.
-      // onAuthStateChange will fire with SIGNED_IN once done.
+      // supabase-js exchanges the PKCE code automatically when detectSessionInUrl: true.
+      // Give it a tick to complete, then check if a session already exists.
       const { data, error } = await supabase.auth.getSession()
 
       if (error) {
@@ -33,38 +39,48 @@ export default function AuthCallbackPage() {
         return
       }
 
-      if (data.session) {
-        // Session already established — go to dashboard
+      if (data?.session) {
+        // Session already established — go straight to dashboard
         navigate('/dashboard', { replace: true })
         return
       }
 
-      // Session not ready yet — listen for it (PKCE code exchange in progress)
-      const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      // Session not ready yet — PKCE code exchange is still in flight.
+      // Listen for the SIGNED_IN event from onAuthStateChange.
+      const { data: listenerData } = supabase.auth.onAuthStateChange(
         (event, session) => {
           if (event === 'SIGNED_IN' && session) {
-            subscription.unsubscribe()
+            clearTimeout(timeout)
+            subscription?.unsubscribe()
             navigate('/dashboard', { replace: true })
-          } else if (event === 'SIGNED_OUT' || (!session && event !== 'INITIAL_SESSION')) {
-            subscription.unsubscribe()
+          } else if (
+            event === 'SIGNED_OUT' ||
+            (event !== 'INITIAL_SESSION' && !session)
+          ) {
+            clearTimeout(timeout)
+            subscription?.unsubscribe()
             navigate('/login?error=oauth_failed', { replace: true })
           }
         }
       )
 
-      // Safety timeout — if nothing fires in 10s, send to login
-      const timeout = setTimeout(() => {
-        subscription.unsubscribe()
+      subscription = listenerData.subscription
+
+      // Safety timeout — if nothing fires in 10 s, give up and send to login
+      timeout = setTimeout(() => {
+        subscription?.unsubscribe()
         navigate('/login?error=timeout', { replace: true })
       }, 10_000)
-
-      return () => {
-        clearTimeout(timeout)
-        subscription.unsubscribe()
-      }
     }
 
     handleCallback()
+
+    // Cleanup runs synchronously when the component unmounts, cancelling
+    // the listener and timeout regardless of where the async work is.
+    return () => {
+      clearTimeout(timeout)
+      subscription?.unsubscribe()
+    }
   }, [navigate])
 
   return (
