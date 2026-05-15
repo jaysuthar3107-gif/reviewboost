@@ -1,0 +1,213 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply font-sans antialiased;
+    @apply bg-gray-50 text-gray-900;
+    @apply dark:bg-surface-dark dark:text-gray-100;
+    transition: background-color 0.3s ease, color 0.3s ease;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-gray-100 dark:bg-surface-card;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-gray-300 dark:bg-gray-600 rounded-full;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-gray-400 dark:bg-gray-500;
+  }
+}
+
+@layer components {
+  .glass-card {
+    @apply bg-white/80 dark:bg-white/5 backdrop-blur-xl border border-white/20 dark:border-white/10;
+    @apply rounded-2xl shadow-card;
+  }
+
+  .glass-card-hover {
+    @apply glass-card transition-all duration-300;
+    @apply hover:shadow-card-hover hover:border-brand-400/30 dark:hover:border-brand-400/20;
+    @apply hover:-translate-y-1;
+  }
+
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2;
+    @apply bg-gradient-to-r from-brand-500 to-accent-500;
+    @apply text-white font-semibold px-6 py-3 rounded-xl;
+    @apply shadow-glow-blue hover:shadow-glow-purple;
+    @apply transition-all duration-300 hover:scale-105 active:scale-95;
+    @apply focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-offset-2;
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-2;
+    @apply bg-white dark:bg-white/10 border border-gray-200 dark:border-white/20;
+    @apply text-gray-700 dark:text-gray-200 font-semibold px-6 py-3 rounded-xl;
+    @apply transition-all duration-300 hover:scale-105 active:scale-95;
+    @apply hover:bg-gray-50 dark:hover:bg-white/20;
+    @apply focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-offset-2;
+  }
+
+  .btn-danger {
+    @apply inline-flex items-center justify-center gap-2;
+    @apply bg-red-500 hover:bg-red-600;
+    @apply text-white font-semibold px-6 py-3 rounded-xl;
+    @apply transition-all duration-300 hover:scale-105 active:scale-95;
+  }
+
+  .btn-success {
+    @apply inline-flex items-center justify-center gap-2;
+    @apply bg-emerald-500 hover:bg-emerald-600;
+    @apply text-white font-semibold px-6 py-3 rounded-xl;
+    @apply transition-all duration-300 hover:scale-105 active:scale-95;
+  }
+
+  .input-field {
+    @apply w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-gray-700;
+    @apply bg-white dark:bg-surface-card text-gray-900 dark:text-gray-100;
+    @apply placeholder-gray-400 dark:placeholder-gray-500;
+    @apply focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-transparent;
+    @apply transition-all duration-200;
+  }
+
+  .stat-card {
+    @apply glass-card p-6 relative overflow-hidden;
+    @apply hover:shadow-card-hover transition-all duration-300;
+  }
+
+  .nav-link {
+    @apply text-gray-600 dark:text-gray-400 hover:text-brand-500 dark:hover:text-brand-400;
+    @apply font-medium transition-colors duration-200;
+  }
+
+  .badge {
+    @apply inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold;
+  }
+
+  .badge-blue {
+    @apply badge bg-brand-100 text-brand-700 dark:bg-brand-900/30 dark:text-brand-400;
+  }
+
+  .badge-green {
+    @apply badge bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400;
+  }
+
+  .badge-yellow {
+    @apply badge bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400;
+  }
+
+  .section-title {
+    @apply text-3xl md:text-4xl font-bold text-gray-900 dark:text-white;
+  }
+
+  .section-subtitle {
+    @apply text-lg text-gray-600 dark:text-gray-400 mt-3;
+  }
+}
+
+@layer utilities {
+  .text-gradient {
+    @apply bg-gradient-to-r from-brand-500 to-accent-500 bg-clip-text text-transparent;
+  }
+
+  .bg-mesh {
+    background-color: #0f172a;
+    background-image:
+      radial-gradient(at 40% 20%, hsla(217,91%,60%,0.15) 0px, transparent 50%),
+      radial-gradient(at 80% 0%, hsla(270,91%,65%,0.1) 0px, transparent 50%),
+      radial-gradient(at 0% 50%, hsla(197,91%,60%,0.1) 0px, transparent 50%);
+  }
+
+  .shimmer-text {
+    background: linear-gradient(90deg, #e2e8f0 25%, #f8fafc 50%, #e2e8f0 75%);
+    background-size: 200% auto;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: shimmer 2s linear infinite;
+  }
+
+  .star-rating-btn {
+    @apply text-5xl cursor-pointer transition-all duration-200;
+    @apply hover:scale-125 focus:outline-none;
+    filter: drop-shadow(0 0 0px transparent);
+  }
+
+  .star-rating-btn.active {
+    filter: drop-shadow(0 0 8px rgba(251, 191, 36, 0.8));
+  }
+
+  .page-enter {
+    animation: fadeIn 0.4s ease-out, slideUp 0.4s ease-out;
+  }
+}
+
+/* Custom star animation */
+@keyframes starPop {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.4); }
+  100% { transform: scale(1.2); }
+}
+
+.star-pop {
+  animation: starPop 0.3s ease-out forwards;
+}
+
+/* QR Code styles */
+.qr-container {
+  @apply p-4 bg-white rounded-2xl shadow-glow-blue;
+  display: inline-block;
+}
+
+/* Chart tooltips */
+.recharts-tooltip-wrapper {
+  @apply !shadow-card-hover;
+}
+
+/* Gradient borders */
+.gradient-border {
+  position: relative;
+  border-radius: 1rem;
+  padding: 1px;
+  background: linear-gradient(135deg, #0ea5e9, #8b5cf6);
+}
+
+.gradient-border > * {
+  border-radius: calc(1rem - 1px);
+}
+
+/* Floating animation for hero */
+.float-slow {
+  animation: float 8s ease-in-out infinite;
+}
+
+.float-medium {
+  animation: float 5s ease-in-out infinite reverse;
+}
+
+/* Language selector */
+.lang-option {
+  @apply flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer;
+  @apply hover:bg-gray-100 dark:hover:bg-white/10 transition-colors duration-150;
+  @apply text-sm font-medium text-gray-700 dark:text-gray-300;
+}
+
+/* Toast override */
+.react-hot-toast-container {
+  z-index: 9999 !important;
+}
