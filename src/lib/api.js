@@ -1,25 +1,33 @@
 import { supabase } from '../lib/supabase'
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TABLE SCHEMA (run once in Supabase SQL editor if the table is missing):
+// TABLE: public.ratings
 //
-//   create table if not exists reviews (
-//     id            uuid primary key default gen_random_uuid(),
-//     business_id   uuid references businesses(id) on delete cascade,
-//     business_slug text not null,
-//     rating        int  not null check (rating between 1 and 5),
-//     name          text,
-//     feedback      text,
-//     type          text not null default 'rating',  -- 'scan' | 'rating' | 'feedback'
-//     created_at    timestamptz not null default now()
-//   );
+//   Columns (match exactly what is in Supabase):
+//     id            uuid primary key default gen_random_uuid()
+//     business_slug text not null
+//     rating        int4
+//     rated_at      timestamptz default now()
 //
-//   -- Allow public inserts (QR page is unauthenticated):
-//   alter table reviews enable row level security;
-//   create policy "public insert" on reviews for insert with check (true);
-//   create policy "owner select" on reviews for select using (
-//     business_id in (select id from businesses where user_id = auth.uid())
-//   );
+// If you need scan/feedback support later, add columns as needed.
+//
+// RLS POLICIES (run in Supabase SQL editor if missing):
+//   alter table ratings enable row level security;
+//
+//   -- Allow anyone to insert (public QR page, no login required)
+//   create policy "public insert ratings"
+//     on ratings for insert with check (true);
+//
+//   -- Allow authenticated owner to select their own ratings
+//   create policy "owner select ratings"
+//     on ratings for select
+//     using (
+//       business_slug in (
+//         select slug from businesses where user_id = auth.uid()
+//       )
+//     );
+//
+//   -- Enable realtime on ratings table (Supabase Dashboard → Database → Replication)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Generate AI review suggestions using Gemini API */
@@ -109,85 +117,99 @@ function getFallbackSuggestions(businessName, rating, lang) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Review Submission — all events write to the unified `reviews` table
+// Review / Rating submission — writes to public.ratings table
+//
+// Schema: id (uuid), business_slug (text), rating (int4), rated_at (timestamptz)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Record a QR code scan (anonymous, no rating yet).
- * @param {string} businessSlug
- * @param {string|null} businessId  — UUID from businesses table
+ * Record a QR code scan (no rating yet).
+ * Because the ratings table has no "type" column, we skip scan recording
+ * or store it as rating=0 — we simply do nothing here to avoid schema errors.
+ * Analytics counts scans separately via ReviewPage visits if needed.
  */
 export async function recordScan(businessSlug, businessId = null) {
-  console.log('[API] recordScan START — slug:', businessSlug, '| business_id:', businessId)
-  try {
-    const payload = {
-      business_slug: businessSlug,
-      business_id: businessId || null,
-      type: 'scan',
-      rating: null,
-      created_at: new Date().toISOString(),
-    }
-    console.log('[API] recordScan inserting:', payload)
-    const { data, error } = await supabase.from('reviews').insert(payload).select()
-    console.log('[API] recordScan result — data:', data, '| error:', error)
-    if (error) console.error('[API] recordScan error:', error.message, error.code)
-  } catch (e) {
-    console.error('[API] recordScan threw:', e)
-  }
+  // ratings table only supports actual star ratings (1–5).
+  // Scan tracking would need a separate "scans" table.
+  // For now this is a no-op to avoid insert errors.
+  console.log('[API] recordScan — skipped (ratings table does not have a type column):', businessSlug)
 }
 
 /**
- * Record a star rating (no text feedback).
+ * Record a star rating into public.ratings table.
+ * Only inserts columns that actually exist: business_slug, rating, rated_at
+ *
  * @param {string} businessSlug
- * @param {number} rating
- * @param {string|null} businessId
+ * @param {number} selectedRating  — 1 to 5
+ * @param {string|null} businessId — unused (not a column), kept for API compat
  */
-export async function recordRating(businessSlug, rating, businessId = null) {
-  console.log('[API] recordRating START — slug:', businessSlug, '| rating:', rating, '| business_id:', businessId)
+export async function recordRating(businessSlug, selectedRating, businessId = null) {
+  console.log('[API] recordRating START — slug:', businessSlug, '| rating:', selectedRating)
+
+  if (!selectedRating || selectedRating < 1 || selectedRating > 5) {
+    console.error('[API] recordRating — invalid rating value:', selectedRating)
+    return
+  }
+
+  if (!businessSlug) {
+    console.error('[API] recordRating — missing businessSlug')
+    return
+  }
+
   try {
     const payload = {
       business_slug: businessSlug,
-      business_id: businessId || null,
-      type: 'rating',
-      rating,
-      created_at: new Date().toISOString(),
+      rating: selectedRating,
+      rated_at: new Date().toISOString(),
     }
-    console.log('[API] recordRating inserting:', payload)
-    const { data, error } = await supabase.from('reviews').insert(payload).select()
-    console.log('[API] recordRating result — data:', data, '| error:', error)
-    if (error) console.error('[API] recordRating error:', error.message, error.code)
+
+    console.log('[API] recordRating inserting into ratings:', payload)
+
+    const { data, error } = await supabase
+      .from('ratings')
+      .insert([payload])
+      .select()
+
+    if (error) {
+      console.error('[API] recordRating Supabase error:', error.message, '| code:', error.code, '| details:', error.details)
+    } else {
+      console.log('[API] recordRating SUCCESS — inserted:', data)
+    }
   } catch (e) {
     console.error('[API] recordRating threw:', e)
   }
 }
 
 /**
- * Record private written feedback (low-rating flow).
- * @param {string} businessSlug
- * @param {number} rating
- * @param {string} name
- * @param {string} message
- * @param {string|null} businessId
+ * Record private written feedback.
+ * Note: ratings table has no feedback/name columns.
+ * This stores only the rating; the text is shown to user but not persisted
+ * unless you add a feedback column to the ratings table.
  */
 export async function recordFeedback(businessSlug, rating, name, message, businessId = null) {
-  console.log('[API] recordFeedback START — slug:', businessSlug, '| rating:', rating, '| name:', name, '| business_id:', businessId)
+  console.log('[API] recordFeedback START — slug:', businessSlug, '| rating:', rating, '| name:', name)
+
   try {
+    // Insert the rating portion (columns that exist in schema)
     const payload = {
       business_slug: businessSlug,
-      business_id: businessId || null,
-      type: 'feedback',
       rating,
-      name: name || 'Anonymous',
-      feedback: message,
-      created_at: new Date().toISOString(),
+      rated_at: new Date().toISOString(),
     }
-    console.log('[API] recordFeedback inserting:', payload)
-    const { data, error } = await supabase.from('reviews').insert(payload).select()
-    console.log('[API] recordFeedback result — data:', data, '| error:', error)
+
+    console.log('[API] recordFeedback inserting into ratings:', payload)
+
+    const { data, error } = await supabase
+      .from('ratings')
+      .insert([payload])
+      .select()
+
     if (error) {
-      console.error('[API] recordFeedback error:', error.message, error.code)
+      console.error('[API] recordFeedback Supabase error:', error.message, error.code)
       throw error
     }
+
+    console.log('[API] recordFeedback SUCCESS — inserted:', data)
     return data
   } catch (e) {
     console.error('[API] recordFeedback threw:', e)
@@ -196,50 +218,47 @@ export async function recordFeedback(businessSlug, rating, name, message, busine
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Analytics — reads from unified `reviews` table
+// Analytics — reads from public.ratings table
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Fetch all analytics for a business.
- * Tries by business_id first (most reliable), falls back to slug.
+ * Fetch all analytics for a business from the ratings table.
+ *
+ * @param {string} businessSlug
+ * @param {string|null} businessId — unused (no business_id column in ratings), kept for API compat
  */
 export async function getAnalytics(businessSlug, businessId = null) {
-  console.log('[API] getAnalytics START — slug:', businessSlug, '| business_id:', businessId)
+  console.log('[API] getAnalytics START — slug:', businessSlug)
 
   try {
-    // Build query — prefer business_id when available for accuracy
-    let query = supabase.from('reviews').select('*')
-    if (businessId) {
-      console.log('[API] getAnalytics querying by business_id:', businessId)
-      query = query.eq('business_id', businessId)
-    } else {
-      console.log('[API] getAnalytics querying by business_slug:', businessSlug)
-      query = query.eq('business_slug', businessSlug)
-    }
-
-    const { data: rows, error } = await query.order('created_at', { ascending: false })
+    const { data: rows, error } = await supabase
+      .from('ratings')
+      .select('*')
+      .eq('business_slug', businessSlug)
+      .order('rated_at', { ascending: false })
 
     console.log('[API] getAnalytics raw rows:', rows?.length ?? 0, '| error:', error)
+
     if (error) {
       console.error('[API] getAnalytics Supabase error:', error.message, error.code, error.details)
       throw error
     }
 
-    const scans   = rows.filter(r => r.type === 'scan')
-    const ratings = rows.filter(r => r.type === 'rating' || r.type === 'feedback')
-    const feedbackRows = rows.filter(r => r.type === 'feedback' && r.feedback)
-
-    const totalScans   = scans.length
-    const totalRatings = ratings.length
+    const totalScans   = 0  // not tracked in ratings table
+    const totalRatings = rows.length
     const avgRating    = totalRatings > 0
-      ? (ratings.reduce((s, r) => s + (r.rating || 0), 0) / totalRatings).toFixed(1)
+      ? (rows.reduce((s, r) => s + (r.rating || 0), 0) / totalRatings).toFixed(1)
       : 0
 
     // Star distribution
     const dist = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 }
-    ratings.forEach(r => { if (r.rating) dist[r.rating] = (dist[r.rating] || 0) + 1 })
+    rows.forEach(r => {
+      if (r.rating >= 1 && r.rating <= 5) {
+        dist[r.rating] = (dist[r.rating] || 0) + 1
+      }
+    })
 
-    // Last 30 days daily breakdown
+    // Last 30 days daily breakdown — use rated_at column
     const now = new Date()
     const days = Array.from({ length: 30 }, (_, i) => {
       const d = new Date(now)
@@ -249,22 +268,22 @@ export async function getAnalytics(businessSlug, businessId = null) {
 
     const dailyRatings = days.map(day => ({
       date: day,
-      count: ratings.filter(r => r.created_at?.startsWith(day)).length,
+      count: rows.filter(r => r.rated_at?.startsWith(day)).length,
       avg: (() => {
-        const dayRatings = ratings.filter(r => r.created_at?.startsWith(day) && r.rating)
+        const dayRatings = rows.filter(r => r.rated_at?.startsWith(day) && r.rating)
         return dayRatings.length
           ? (dayRatings.reduce((s, r) => s + r.rating, 0) / dayRatings.length).toFixed(1)
           : null
       })(),
     }))
 
-    // Latest 10 reviews with text feedback
-    const latestReviews = feedbackRows.slice(0, 10).map(r => ({
+    // Latest reviews — ratings table has no feedback text, show rating only
+    const latestReviews = rows.slice(0, 10).map(r => ({
       id: r.id,
-      name: r.name || 'Anonymous',
+      name: 'Anonymous',
       rating: r.rating,
-      feedback: r.feedback,
-      created_at: r.created_at,
+      feedback: null,
+      created_at: r.rated_at,
     }))
 
     const result = { totalScans, totalRatings, avgRating, dist, dailyRatings, latestReviews }
@@ -277,23 +296,27 @@ export async function getAnalytics(businessSlug, businessId = null) {
 }
 
 /**
- * Subscribe to real-time inserts on the reviews table for a given business.
+ * Subscribe to real-time inserts on the ratings table for a given business.
  * Returns the Supabase channel (call .unsubscribe() to clean up).
+ *
+ * IMPORTANT: Make sure realtime is enabled for the ratings table in
+ * Supabase Dashboard → Database → Replication → ratings (enable INSERT).
  */
 export function subscribeToReviews(businessSlug, businessId, onInsert) {
-  console.log('[API] subscribeToReviews — slug:', businessSlug, '| business_id:', businessId)
-
-  const filter = businessId
-    ? `business_id=eq.${businessId}`
-    : `business_slug=eq.${businessSlug}`
+  console.log('[API] subscribeToReviews — slug:', businessSlug)
 
   const channel = supabase
-    .channel(`reviews:${businessId || businessSlug}`)
+    .channel(`ratings:${businessSlug}`)
     .on(
       'postgres_changes',
-      { event: 'INSERT', schema: 'public', table: 'reviews', filter },
+      {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'ratings',
+        filter: `business_slug=eq.${businessSlug}`,
+      },
       (payload) => {
-        console.log('[API] Real-time INSERT received:', payload.new)
+        console.log('[API] Realtime INSERT received on ratings:', payload.new)
         onInsert(payload.new)
       }
     )

@@ -18,64 +18,61 @@ function withTimeout(promise, ms, label) {
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
   const [business, setBusiness] = useState(null)
+  // Start loading=true — we don't know the session yet
   const [loading, setLoading] = useState(true)
 
-  // Guard against running fetchBusiness for the same userId twice concurrently
+  // Guard: only one fetchBusiness call at a time per userId
   const fetchingFor = useRef(null)
+  // Track if the initial session check is done
+  const initialized = useRef(false)
 
   useEffect(() => {
-    // ── 1. Restore session on mount ───────────────────────────────────────────
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      const sessionUser = session?.user ?? null
-      console.log('[Auth] getSession →', sessionUser ? `user ${sessionUser.id}` : 'no session')
-      setUser(sessionUser)
-      if (sessionUser) {
-        fetchBusiness(sessionUser.id)
-      } else {
-        setLoading(false)
-      }
-    }).catch(err => {
-      console.error('[Auth] getSession threw:', err)
-      setLoading(false)
-    })
-
-    // ── 2. Keep session in sync (login, logout, token refresh, OAuth return) ──
+    // ── Single source of truth: onAuthStateChange ───────────────────────────
+    // supabase-js v2 fires INITIAL_SESSION synchronously on subscribe
+    // (or very shortly after), which replaces the need for a separate
+    // getSession() call. This avoids the double-fetch race condition.
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
         const sessionUser = session?.user ?? null
-        console.log('[Auth] onAuthStateChange event:', event, '→ user:', sessionUser?.id ?? 'none')
+        console.log('[Auth] onAuthStateChange →', event, '| user:', sessionUser?.id ?? 'none')
+
         setUser(sessionUser)
 
         if (sessionUser) {
-          await fetchBusiness(sessionUser.id)
+          // Don't block the state update — fetch business in background
+          fetchBusiness(sessionUser.id)
         } else {
           setBusiness(null)
           setLoading(false)
+        }
+
+        // Mark initialized so we only setLoading(false) once after the
+        // INITIAL_SESSION event fires (covers refresh + first load)
+        if (!initialized.current) {
+          initialized.current = true
         }
       }
     )
 
     return () => subscription.unsubscribe()
-  }, [])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Fetch the business row that belongs to this user ──────────────────────
+  // ── Fetch the business row for this user ────────────────────────────────
   async function fetchBusiness(userId) {
-    // Clear any stale guard so we never deadlock
     if (fetchingFor.current === userId) {
-      console.log('[Auth] fetchBusiness — already fetching for', userId, ', skipping')
+      console.log('[Auth] fetchBusiness — already in flight for', userId, ', skipping')
       return
     }
     fetchingFor.current = userId
-    console.log('[Auth] fetchBusiness START for user:', userId)
+    console.log('[Auth] fetchBusiness START — user:', userId)
 
     try {
-      console.log('[Auth] Querying businesses table for user_id:', userId)
       const { data, error } = await withTimeout(
         supabase
           .from('businesses')
           .select('*')
           .eq('user_id', userId)
-          .maybeSingle(),  // returns null (not error) when no row found
+          .maybeSingle(),
         10_000,
         'fetchBusiness'
       )
@@ -92,8 +89,8 @@ export function AuthProvider({ children }) {
       setBusiness(null)
     } finally {
       fetchingFor.current = null
-      console.log('[Auth] fetchBusiness DONE — setLoading(false)')
       setLoading(false)
+      console.log('[Auth] fetchBusiness DONE — setLoading(false)')
     }
   }
 
@@ -130,11 +127,11 @@ export function AuthProvider({ children }) {
   async function signIn(email, password) {
     const { data, error } = await supabase.auth.signInWithPassword({ email, password })
     if (error) throw error
-    // onAuthStateChange fires → fetchBusiness runs automatically
+    // onAuthStateChange fires SIGNED_IN → fetchBusiness runs automatically
     return data
   }
 
-  // ── Google OAuth (redirects browser; session handled on /auth/callback) ───
+  // ── Google OAuth (redirects browser; session handled on /auth/callback) ──
   async function signInWithGoogle() {
     return googleOAuth()
   }
@@ -142,8 +139,7 @@ export function AuthProvider({ children }) {
   // ── Sign out ──────────────────────────────────────────────────────────────
   async function signOut() {
     await supabase.auth.signOut()
-    setUser(null)
-    setBusiness(null)
+    // onAuthStateChange fires SIGNED_OUT → clears user + business automatically
   }
 
   // ── Update the business profile ───────────────────────────────────────────
@@ -152,16 +148,18 @@ export function AuthProvider({ children }) {
 
     console.log('[Auth] updateBusiness START — user:', user.id, '| updates:', updates)
 
-    const query = supabase
-      .from('businesses')
-      .update(updates)
-      .eq('user_id', user.id)
-      .select()
-      .maybeSingle()  // avoids PGRST116 crash if RLS blocks the row
-
     let data, error
     try {
-      ;({ data, error } = await withTimeout(query, 10_000, 'updateBusiness'))
+      ;({ data, error } = await withTimeout(
+        supabase
+          .from('businesses')
+          .update(updates)
+          .eq('user_id', user.id)
+          .select()
+          .maybeSingle(),
+        10_000,
+        'updateBusiness'
+      ))
     } catch (timeoutErr) {
       console.error('[Auth] updateBusiness — TIMED OUT:', timeoutErr.message)
       throw timeoutErr
@@ -170,7 +168,7 @@ export function AuthProvider({ children }) {
     console.log('[Auth] updateBusiness result → data:', data, '| error:', error)
 
     if (error) {
-      console.error('[Auth] updateBusiness Supabase error:', error.message, '| code:', error.code, '| details:', error.details)
+      console.error('[Auth] updateBusiness Supabase error:', error.message, '| code:', error.code)
       throw error
     }
 
@@ -180,7 +178,7 @@ export function AuthProvider({ children }) {
       throw new Error(msg)
     }
 
-    console.log('[Auth] updateBusiness SUCCESS — setBusiness:', data)
+    console.log('[Auth] updateBusiness SUCCESS:', data)
     setBusiness(data)
     return data
   }
@@ -194,11 +192,11 @@ export function AuthProvider({ children }) {
     signInWithGoogle,
     signOut,
     updateBusiness,
-    // Manual refresh — always bypasses the concurrency guard so callers can await it reliably
+    // Manual refresh — clears guard so callers can force a re-fetch
     refreshBusiness: async () => {
       if (!user) return
       console.log('[Auth] refreshBusiness called')
-      fetchingFor.current = null  // clear guard so fetchBusiness will run
+      fetchingFor.current = null
       await fetchBusiness(user.id)
     },
   }

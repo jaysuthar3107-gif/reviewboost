@@ -205,10 +205,16 @@ export default function DashboardPage() {
         },
         {
           icon: Activity,
-          label: 'Review Rate',
+          label: 'Positive Rate',
           value:
-            analytics.totalScans > 0
-              ? `${Math.round((analytics.totalRatings / analytics.totalScans) * 100)}%`
+            analytics.totalRatings > 0
+              ? `${Math.round(
+                  (Object.entries(analytics.dist)
+                    .filter(([star]) => Number(star) >= 4)
+                    .reduce((s, [, c]) => s + c, 0) /
+                    analytics.totalRatings) *
+                    100
+                )}%`
               : '—',
           color: 'bg-gradient-to-br from-emerald-500 to-emerald-600',
           trend: null,
@@ -284,7 +290,7 @@ export default function DashboardPage() {
                 Could not load analytics
               </p>
               <p className="text-xs text-red-600 dark:text-red-500">
-                Check your Supabase <code>reviews</code> table and RLS policies. See console for details.
+                Check your Supabase <code>ratings</code> table and RLS policies. See console for details.
               </p>
             </div>
             <button

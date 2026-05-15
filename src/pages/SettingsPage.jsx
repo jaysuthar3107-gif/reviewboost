@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { useAuth } from '../contexts/AuthContext'
@@ -29,6 +29,16 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [saveError, setSaveError] = useState(null)
+
+  // Sync form when business loads asynchronously (e.g. after Google OAuth redirect)
+  useEffect(() => {
+    if (business) {
+      setForm({
+        name: business.name || '',
+        google_review_url: business.google_review_url || '',
+      })
+    }
+  }, [business?.id]) // re-sync only when the business id changes
 
   const appUrl = import.meta.env.VITE_APP_URL || window.location.origin
   const reviewUrl = business?.slug
