@@ -59,8 +59,8 @@ export default function ReviewPage() {
         setBusiness(data)
         console.log('[ReviewPage] Business loaded:', data.name, '| id:', data.id)
 
-        // Record QR scan — pass both slug and business_id
-        await recordScan(slug, data.id)
+        // Record QR scan into ratings table (type='scan')
+        await recordScan(slug)
       } catch (err) {
         console.error('[ReviewPage] loadBusiness threw:', err)
         setNotFound(true)
@@ -77,9 +77,8 @@ export default function ReviewPage() {
     setAnimateStar(stars)
     setTimeout(() => setAnimateStar(null), 400)
 
-    // Record the rating — pass both slug and business_id
-    console.log('[ReviewPage] handleRating — stars:', stars, '| business_id:', business?.id)
-    await recordRating(slug, stars, business?.id)
+    console.log('[ReviewPage] handleRating — stars:', stars)
+    await recordRating(slug, stars)
     setRatingSubmitted(true)
 
     if (stars >= 4) {

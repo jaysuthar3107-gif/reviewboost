@@ -23,7 +23,7 @@ export default function PrivateFeedbackForm({ businessSlug, businessId, rating }
 
     try {
       // Pass business_id so the dashboard can query by id
-      await recordFeedback(businessSlug, rating, name, message, businessId)
+      await recordFeedback(businessSlug, rating, name, message)
       setSubmitted(true)
       toast.success(t('feedbackSent') || 'Feedback sent — thank you!')
     } catch (err) {

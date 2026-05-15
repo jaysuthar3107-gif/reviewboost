@@ -141,7 +141,7 @@ export default function DashboardPage() {
     setAnalyticsError(false)
 
     try {
-      const data = await getAnalytics(business.slug, business.id)
+      const data = await getAnalytics(business.slug)
       console.log('[Dashboard] analytics loaded:', data)
       setAnalytics(data)
       setLastRefreshed(new Date())
@@ -151,7 +151,7 @@ export default function DashboardPage() {
     } finally {
       setLoadingAnalytics(false)
     }
-  }, [business?.slug, business?.id])
+  }, [business?.slug])
 
   // ── Initial load ───────────────────────────────────────────────────────────
   useEffect(() => {
@@ -162,9 +162,9 @@ export default function DashboardPage() {
   useEffect(() => {
     if (!business?.slug) return
 
-    console.log('[Dashboard] subscribing to realtime reviews — slug:', business.slug)
-    const channel = subscribeToReviews(business.slug, business.id, (newRow) => {
-      console.log('[Dashboard] realtime: new review received, refreshing analytics...', newRow)
+    console.log('[Dashboard] subscribing to realtime — slug:', business.slug)
+    const channel = subscribeToReviews(business.slug, (newRow) => {
+      console.log('[Dashboard] realtime: new row received, refreshing…', newRow)
       fetchAnalytics()
     })
 
@@ -172,7 +172,7 @@ export default function DashboardPage() {
       console.log('[Dashboard] unsubscribing realtime channel')
       channel.unsubscribe()
     }
-  }, [business?.slug, business?.id, fetchAnalytics])
+  }, [business?.slug, fetchAnalytics])
 
   // ── No business yet ────────────────────────────────────────────────────────
   if (!business) {
@@ -206,16 +206,7 @@ export default function DashboardPage() {
         {
           icon: Activity,
           label: 'Positive Rate',
-          value:
-            analytics.totalRatings > 0
-              ? `${Math.round(
-                  (Object.entries(analytics.dist)
-                    .filter(([star]) => Number(star) >= 4)
-                    .reduce((s, [, c]) => s + c, 0) /
-                    analytics.totalRatings) *
-                    100
-                )}%`
-              : '—',
+          value: analytics.totalRatings > 0 ? `${analytics.positiveRate}%` : '—',
           color: 'bg-gradient-to-br from-emerald-500 to-emerald-600',
           trend: null,
         },

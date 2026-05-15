@@ -1,89 +1,97 @@
 -- ============================================================
--- ReviewBoost — Supabase SQL Setup
+-- ReviewBoost — ALTER ratings table to add missing columns
 -- Run this in: Supabase Dashboard → SQL Editor → New Query
 -- ============================================================
 
+-- Add columns that do not yet exist in public.ratings
+-- (ALTER COLUMN is safe to run even if the column already exists on PG 12+)
+-- We use DO blocks to avoid errors if columns already exist.
+
+DO $$
+BEGIN
+  -- reviewer name (optional, shown in dashboard)
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'ratings' AND column_name = 'name'
+  ) THEN
+    ALTER TABLE public.ratings ADD COLUMN name text;
+  END IF;
+
+  -- written feedback text (optional, low-rating flow)
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'ratings' AND column_name = 'feedback'
+  ) THEN
+    ALTER TABLE public.ratings ADD COLUMN feedback text;
+  END IF;
+
+  -- row type: 'scan' | 'rating' | 'feedback'
+  -- Scans have rating = NULL, ratings/feedback have rating 1-5
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'ratings' AND column_name = 'type'
+  ) THEN
+    ALTER TABLE public.ratings ADD COLUMN type text NOT NULL DEFAULT 'rating';
+  END IF;
+END $$;
+
 -- ──────────────────────────────────────────────────────────────
--- 1. RATINGS TABLE
---    Columns that actually exist: id, business_slug, rating, rated_at
+-- RLS policies
 -- ──────────────────────────────────────────────────────────────
 
--- Enable Row Level Security (safe to run even if already enabled)
-alter table public.ratings enable row level security;
+ALTER TABLE public.ratings ENABLE ROW LEVEL SECURITY;
 
--- Drop old policies if they exist (prevents duplicates)
-drop policy if exists "public insert ratings" on public.ratings;
-drop policy if exists "owner select ratings" on public.ratings;
-drop policy if exists "anon insert ratings" on public.ratings;
+-- Drop stale policies (safe to re-run)
+DROP POLICY IF EXISTS "public insert ratings" ON public.ratings;
+DROP POLICY IF EXISTS "owner select ratings" ON public.ratings;
+DROP POLICY IF EXISTS "anon insert ratings" ON public.ratings;
 
--- Allow anyone (unauthenticated QR page visitors) to INSERT ratings
-create policy "public insert ratings"
-  on public.ratings
-  for insert
-  with check (true);
+-- Anyone (unauthenticated QR visitor) may insert
+CREATE POLICY "public insert ratings"
+  ON public.ratings FOR INSERT
+  WITH CHECK (true);
 
--- Allow authenticated business owners to SELECT their own ratings
-create policy "owner select ratings"
-  on public.ratings
-  for select
-  using (
-    business_slug in (
-      select slug from public.businesses where user_id = auth.uid()
+-- Authenticated owner may select rows belonging to their business
+CREATE POLICY "owner select ratings"
+  ON public.ratings FOR SELECT
+  USING (
+    business_slug IN (
+      SELECT slug FROM public.businesses WHERE user_id = auth.uid()
     )
   );
 
 -- ──────────────────────────────────────────────────────────────
--- 2. BUSINESSES TABLE (if it exists — check policies)
+-- Businesses table policies (safe to re-run)
 -- ──────────────────────────────────────────────────────────────
 
-alter table public.businesses enable row level security;
+ALTER TABLE public.businesses ENABLE ROW LEVEL SECURITY;
 
-drop policy if exists "owner select businesses" on public.businesses;
-drop policy if exists "owner insert businesses" on public.businesses;
-drop policy if exists "owner update businesses" on public.businesses;
-drop policy if exists "public read businesses" on public.businesses;
+DROP POLICY IF EXISTS "public read businesses"  ON public.businesses;
+DROP POLICY IF EXISTS "owner select businesses" ON public.businesses;
+DROP POLICY IF EXISTS "owner insert businesses" ON public.businesses;
+DROP POLICY IF EXISTS "owner update businesses" ON public.businesses;
 
--- Business owners can read their own row
-create policy "owner select businesses"
-  on public.businesses
-  for select
-  using (user_id = auth.uid());
+-- ReviewPage reads by slug — unauthenticated
+CREATE POLICY "public read businesses"
+  ON public.businesses FOR SELECT USING (true);
 
--- Authenticated users can insert (for first-time Google OAuth setup)
-create policy "owner insert businesses"
-  on public.businesses
-  for insert
-  with check (user_id = auth.uid());
+-- Owner CRUD
+CREATE POLICY "owner insert businesses"
+  ON public.businesses FOR INSERT WITH CHECK (user_id = auth.uid());
 
--- Owners can update their own row
-create policy "owner update businesses"
-  on public.businesses
-  for update
-  using (user_id = auth.uid());
-
--- ReviewPage needs to read business by slug (unauthenticated QR scan)
-create policy "public read businesses"
-  on public.businesses
-  for select
-  using (true);
+CREATE POLICY "owner update businesses"
+  ON public.businesses FOR UPDATE USING (user_id = auth.uid());
 
 -- ──────────────────────────────────────────────────────────────
--- 3. REALTIME — Enable for ratings table
---    Supabase Dashboard → Database → Replication → ratings → enable INSERT
---    OR run this SQL:
+-- Realtime — enable for ratings table
 -- ──────────────────────────────────────────────────────────────
 
--- Enable realtime publication for ratings table
-alter publication supabase_realtime add table public.ratings;
+-- If this errors with "already member", that's fine — table is already enabled.
+ALTER PUBLICATION supabase_realtime ADD TABLE public.ratings;
 
 -- ──────────────────────────────────────────────────────────────
--- 4. VERIFY (optional — run to check)
+-- Verify (optional)
 -- ──────────────────────────────────────────────────────────────
-
--- Check policies
--- select schemaname, tablename, policyname, cmd, qual
--- from pg_policies
--- where tablename in ('ratings', 'businesses');
-
--- Check realtime
--- select * from pg_publication_tables where pubname = 'supabase_realtime';
+-- SELECT column_name, data_type FROM information_schema.columns
+-- WHERE table_schema = 'public' AND table_name = 'ratings'
+-- ORDER BY ordinal_position;
