@@ -2,11 +2,9 @@
  * ReviewPage.jsx
  *
  * STRICT FLOW:
- *   page load  → recordScan() only (total scans +1)
- *   star click → setSelectedRating() ONLY — zero API calls
- *   Submit btn → recordRating() only here — total ratings +1, analytics update
- *
- * Nothing touches the database between page-open and button-click.
+ *   page load  → recordScan() only — scans +1, no review record
+ *   star click → setSelectedRating() + load AI suggestions (4/5★) — zero DB writes
+ *   Submit btn → recordRating() — the ONE place that writes a review to Supabase
  */
 
 import { useEffect, useRef, useState } from 'react'
@@ -40,7 +38,7 @@ function markAsSubmitted(slug) {
   try { sessionStorage.setItem(`rb_${slug}`, JSON.stringify({ ts: Date.now() })) } catch {}
 }
 
-// ─── Loading spinner ──────────────────────────────────────────────────────────
+// ─── Inline spinner ───────────────────────────────────────────────────────────
 function Spinner() {
   return (
     <svg className="animate-spin w-5 h-5" viewBox="0 0 24 24" fill="none">
@@ -55,31 +53,36 @@ export default function ReviewPage() {
   const { slug } = useParams()
   const { t } = useTranslation()
 
-  // ── Page / business state ─────────────────────────────────────────────────
-  const [business, setBusiness]   = useState(null)
-  const [pageState, setPageState] = useState('loading') // 'loading' | 'ready' | 'notfound'
+  // ── Page / business ───────────────────────────────────────────────────────
+  const [business,   setBusiness]   = useState(null)
+  const [pageState,  setPageState]  = useState('loading') // 'loading'|'ready'|'notfound'
 
-  // ── Pure local UI state — NO DB writes until submit ───────────────────────
-  const [selectedRating, setSelectedRating] = useState(0)  // ← only local
+  // ── Local UI state — NO DB writes until submit ────────────────────────────
+  const [selectedRating, setSelectedRating] = useState(0)
   const [hoveredStar,    setHoveredStar]    = useState(0)
   const [reviewText,     setReviewText]     = useState('')
   const [animateStar,    setAnimateStar]    = useState(null)
 
+  // ── AI suggestions state ──────────────────────────────────────────────────
+  // Loaded on star click (4/5★). No DB write. Pure UI fetch.
+  const [suggestions,  setSuggestions]  = useState([])
+  const [loadingAI,    setLoadingAI]    = useState(false)
+  // Track which star the suggestions were loaded for (avoid redundant fetches)
+  const suggestionsForRating = useRef(0)
+
   // ── Submit lifecycle ──────────────────────────────────────────────────────
-  const [isSubmitting,   setIsSubmitting]   = useState(false)
-  const [isSubmitted,    setIsSubmitted]    = useState(false)
-  const [suggestions,    setSuggestions]    = useState([])
-  const [loadingAI,      setLoadingAI]      = useState(false)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [isSubmitted,  setIsSubmitted]  = useState(false)
 
   // ── Language ──────────────────────────────────────────────────────────────
   const [lang, setLang] = useState(() => localStorage.getItem('lang') || i18n.language || 'en')
   const labels = STAR_LABELS[lang] || STAR_LABELS.en
 
-  // ── Refs ──────────────────────────────────────────────────────────────────
-  const scanFiredRef = useRef(false) // prevent double-scan in React StrictMode
+  // ── Scan guard (prevent double-fire in React StrictMode) ──────────────────
+  const scanFiredRef = useRef(false)
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // STEP 1 — Page open: load business + record scan (ONLY scan, no review)
+  // STEP 1 — Page open: load business + record scan only
   // ═══════════════════════════════════════════════════════════════════════════
   useEffect(() => {
     if (!slug || scanFiredRef.current) return
@@ -87,7 +90,6 @@ export default function ReviewPage() {
 
     ;(async () => {
       try {
-        // Fetch business
         const { data, error } = await supabase
           .from('businesses')
           .select('*')
@@ -95,19 +97,18 @@ export default function ReviewPage() {
           .maybeSingle()
 
         if (error || !data) {
-          console.warn('[ReviewPage] business not found for slug:', slug, error?.message)
+          console.warn('[ReviewPage] not found:', slug, error?.message)
           setPageState('notfound')
           return
         }
 
         setBusiness(data)
         setPageState('ready')
-        console.log('[ReviewPage] business loaded:', data.name)
+        console.log('[ReviewPage] loaded:', data.name)
 
-        // ► Record scan ONLY — this is the only DB write on page load
-        //   Does NOT create a review. Does NOT affect Total Ratings.
+        // ► Only DB write on page load — scan count only
         await recordScan(slug)
-        console.log('[ReviewPage] scan recorded for slug:', slug)
+        console.log('[ReviewPage] scan recorded')
       } catch (err) {
         console.error('[ReviewPage] load error:', err)
         setPageState('notfound')
@@ -116,38 +117,70 @@ export default function ReviewPage() {
   }, [slug])
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // STEP 2 — Star click: ONLY update local state — zero API calls
+  // STEP 2a — Load AI suggestions for 4/5★ (no DB write — pure UI fetch)
   // ═══════════════════════════════════════════════════════════════════════════
-  function handleStarClick(star) {
-    // Guard: stars are locked after submit or during submit
-    if (isSubmitted || isSubmitting) return
+  async function fetchSuggestions(star, businessName, language) {
+    // Skip if already loaded for this exact star+lang combo
+    if (suggestionsForRating.current === `${star}-${language}`) return
 
-    // ── Pure local state update — NO database, NO analytics ──────────────
-    setSelectedRating(star)
+    suggestionsForRating.current = `${star}-${language}`
+    setLoadingAI(true)
+    setSuggestions([])
 
-    // Animate the clicked star
-    setAnimateStar(star)
-    setTimeout(() => setAnimateStar(null), 380)
-
-    console.log('[ReviewPage] star selected (local only):', star)
-    // ─────────────────────────────────────────────────────────────────────
-    // NOTE: recordRating() is NOT called here.
-    // Database insert happens ONLY in handleSubmitReview() below.
-    // ─────────────────────────────────────────────────────────────────────
+    try {
+      const ai = await generateReviewSuggestions(businessName, star, language)
+      // Validate: must be a non-empty array of strings
+      if (Array.isArray(ai) && ai.length > 0) {
+        setSuggestions(ai)
+        console.log('[ReviewPage] AI suggestions loaded:', ai.length, 'for star:', star)
+      } else {
+        console.warn('[ReviewPage] AI returned empty suggestions — using fallback')
+        setSuggestions([])
+      }
+    } catch (err) {
+      console.warn('[ReviewPage] AI suggestions error (non-fatal):', err)
+      setSuggestions([])
+    } finally {
+      setLoadingAI(false)
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // STEP 3 — Submit button: THIS is the ONLY place that writes to Supabase
+  // STEP 2b — Star click: ONLY local state + trigger AI fetch for 4/5★
+  //           Zero database writes here.
+  // ═══════════════════════════════════════════════════════════════════════════
+  function handleStarClick(star) {
+    if (isSubmitted || isSubmitting) return
+
+    // Update local rating state
+    setSelectedRating(star)
+
+    // Pop animation
+    setAnimateStar(star)
+    setTimeout(() => setAnimateStar(null), 380)
+
+    console.log('[ReviewPage] star selected (local only, no DB):', star)
+
+    if (star >= 4) {
+      // ► Fetch AI suggestions — NO database write, just UI content
+      fetchSuggestions(star, business?.name || 'this business', lang)
+    } else {
+      // Clear suggestions for low ratings
+      setSuggestions([])
+      setLoadingAI(false)
+      suggestionsForRating.current = 0
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // STEP 3 — Submit: THE ONLY place that writes a review to Supabase
   // ═══════════════════════════════════════════════════════════════════════════
   async function handleSubmitReview() {
-    // Validation
     if (isSubmitting || isSubmitted) return
     if (!selectedRating || selectedRating < 1 || selectedRating > 5) {
       toast.error('Please select a star rating first ⭐')
       return
     }
-
-    // Duplicate guard
     if (alreadySubmitted(slug)) {
       toast.error('You already submitted a review — thank you! 🙏')
       setIsSubmitted(true)
@@ -155,33 +188,20 @@ export default function ReviewPage() {
     }
 
     setIsSubmitting(true)
-    console.log('[ReviewPage] handleSubmitReview — rating:', selectedRating, '| text:', reviewText.trim())
+    console.log('[ReviewPage] submitting — rating:', selectedRating, '| text:', reviewText.trim())
 
     try {
-      // ► THIS is the one and only database insert for a review
+      // ► ONE database insert — review saved here and only here
       await recordRating(slug, selectedRating, reviewText.trim() || null)
 
-      // Mark locally so page refresh can't re-submit
       markAsSubmitted(slug)
       setIsSubmitted(true)
+      toast.success('Review submitted! Thank you 🙏')
       console.log('[ReviewPage] review submitted successfully ✓')
 
-      // For 4★/5★ — load AI suggestions for Google review
-      if (selectedRating >= 4) {
-        setLoadingAI(true)
-        try {
-          const ai = await generateReviewSuggestions(
-            business?.name || 'this business',
-            selectedRating,
-            lang
-          )
-          setSuggestions(ai)
-        } catch {
-          // Non-fatal — suggestions are a nice-to-have
-          console.warn('[ReviewPage] AI suggestions failed')
-        } finally {
-          setLoadingAI(false)
-        }
+      // For 4/5★: ensure suggestions are loaded (may already be loaded from star click)
+      if (selectedRating >= 4 && suggestions.length === 0 && !loadingAI) {
+        await fetchSuggestions(selectedRating, business?.name || 'this business', lang)
       }
     } catch (err) {
       console.error('[ReviewPage] submit failed:', err)
@@ -191,17 +211,30 @@ export default function ReviewPage() {
     }
   }
 
-  // ─── Language switcher ─────────────────────────────────────────────────────
+  // ── Suggestion selected → populate textarea (pre-submit convenience) ────────
+  function handleSuggestionSelect(text) {
+    if (!isSubmitted) {
+      setReviewText(text)
+      toast.success('Review text filled in — edit it if you like, then submit!')
+    }
+  }
+
+  // ── Language switcher ──────────────────────────────────────────────────────
   function changeLang(code) {
     setLang(code)
     i18n.changeLanguage(code)
     localStorage.setItem('lang', code)
+    // Re-fetch suggestions in new language if rating already selected
+    if (selectedRating >= 4) {
+      suggestionsForRating.current = 0 // reset cache key so it re-fetches
+      fetchSuggestions(selectedRating, business?.name || 'this business', code)
+    }
   }
 
-  // ─── Derived display ───────────────────────────────────────────────────────
-  const displayStar = hoveredStar || selectedRating
-  const showHighRating = isSubmitted && selectedRating >= 4
-  const showLowRating  = isSubmitted && selectedRating >= 1 && selectedRating <= 3
+  // ── Derived display values ─────────────────────────────────────────────────
+  const displayStar    = hoveredStar || selectedRating
+  const showSuggestions = selectedRating >= 4 && (loadingAI || suggestions.length > 0)
+  const showLowForm     = isSubmitted && selectedRating >= 1 && selectedRating <= 3
 
   // ═══════════════════════════════════════════════════════════════════════════
   // RENDER: Loading
@@ -261,8 +294,8 @@ export default function ReviewPage() {
         ))}
       </div>
 
-      {/* ── Main content ──────────────────────────────────────────────────── */}
-      <div className="flex-1 flex items-center justify-center p-4 pb-12">
+      {/* ── Scrollable content ─────────────────────────────────────────────── */}
+      <div className="flex-1 flex justify-center p-4 pb-16">
         <div className="w-full max-w-md">
 
           {/* Business header */}
@@ -280,7 +313,7 @@ export default function ReviewPage() {
             <p className="text-white/60 text-sm mt-1">{t('howWasYourExperience')}</p>
           </motion.div>
 
-          {/* ── Rating card ─────────────────────────────────────────────── */}
+          {/* ── Rating card ───────────────────────────────────────────────── */}
           <motion.div
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
@@ -288,7 +321,7 @@ export default function ReviewPage() {
           >
             <AnimatePresence mode="wait">
 
-              {/* ── SUBMITTED: Thank-you screen ── */}
+              {/* ─── SUBMITTED: thank-you screen ─── */}
               {isSubmitted ? (
                 <motion.div
                   key="success"
@@ -308,11 +341,11 @@ export default function ReviewPage() {
                   </p>
                   <p className="text-sm text-gray-500 dark:text-gray-400">
                     {selectedRating >= 4
-                      ? 'Your review has been saved!'
-                      : 'Your private feedback helps us improve.'}
+                      ? 'Your review has been saved! Help others by sharing it on Google.'
+                      : 'Your private feedback helps us improve. Thank you!'}
                   </p>
 
-                  {/* Google redirect button for 4★/5★ */}
+                  {/* Direct Google button for 4/5★ */}
                   {selectedRating >= 4 && business?.google_review_url && (
                     <motion.a
                       href={business.google_review_url}
@@ -320,7 +353,7 @@ export default function ReviewPage() {
                       rel="noopener noreferrer"
                       initial={{ opacity: 0, y: 12 }}
                       animate={{ opacity: 1, y: 0 }}
-                      transition={{ delay: 0.35 }}
+                      transition={{ delay: 0.3 }}
                       className="mt-6 inline-flex items-center gap-2 btn-primary"
                     >
                       <ExternalLink className="w-4 h-4" />
@@ -331,16 +364,18 @@ export default function ReviewPage() {
 
               ) : (
 
-                /* ── NOT YET SUBMITTED: Star picker + submit ── */
+                /* ─── NOT SUBMITTED: star picker + submit ─── */
                 <motion.div key="rating-form">
                   <p className="text-center text-gray-600 dark:text-gray-300 font-medium mb-6">
                     {t('tapToRate')}
                   </p>
 
-                  {/* ── Stars ─────────────────────────────────────────── */}
-                  {/* Star click → handleStarClick → setSelectedRating ONLY */}
-                  {/* No API call. No DB insert. No analytics update.       */}
-                  <div className="flex justify-center gap-2 mb-4" role="group" aria-label="Star rating">
+                  {/* Stars — click only updates local state, zero DB writes */}
+                  <div
+                    className="flex justify-center gap-2 mb-4"
+                    role="group"
+                    aria-label="Star rating selector"
+                  >
                     {[1, 2, 3, 4, 5].map(star => {
                       const lit = star <= displayStar
                       return (
@@ -348,31 +383,34 @@ export default function ReviewPage() {
                           key={star}
                           id={`star-btn-${star}`}
                           type="button"
-                          aria-label={`${star} star${star !== 1 ? 's' : ''}`}
+                          aria-label={`Rate ${star} star${star !== 1 ? 's' : ''}`}
                           onMouseEnter={() => !isSubmitted && setHoveredStar(star)}
                           onMouseLeave={() => setHoveredStar(0)}
                           onClick={() => handleStarClick(star)}
                           style={{
                             fontSize: '2.75rem',
-                            padding: '4px 6px',
+                            padding: '4px 8px',
                             background: 'none',
                             border: 'none',
-                            cursor: isSubmitted || isSubmitting ? 'not-allowed' : 'pointer',
+                            cursor: isSubmitted || isSubmitting ? 'default' : 'pointer',
                             WebkitTapHighlightColor: 'transparent',
                             touchAction: 'manipulation',
                             lineHeight: 1,
                             userSelect: 'none',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
                           }}
                         >
                           <span
                             style={{
                               display: 'inline-block',
                               transition: 'transform 0.15s ease, filter 0.15s ease, opacity 0.15s ease',
-                              transform: lit ? 'scale(1.12)' : 'scale(1)',
+                              transform: lit ? 'scale(1.15)' : 'scale(1)',
                               filter: lit
-                                ? 'drop-shadow(0 0 10px rgba(251,191,36,0.85))'
+                                ? 'drop-shadow(0 0 10px rgba(251,191,36,0.9))'
                                 : 'grayscale(1)',
-                              opacity: lit ? 1 : 0.3,
+                              opacity: lit ? 1 : 0.28,
                               animation: animateStar === star ? 'starPop 0.35s ease-out' : 'none',
                             }}
                           >
@@ -392,17 +430,18 @@ export default function ReviewPage() {
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, y: -6 }}
                         transition={{ duration: 0.15 }}
-                        className="text-center font-bold text-lg text-gray-900 dark:text-white mb-5"
+                        className="text-center font-bold text-lg text-gray-900 dark:text-white mb-4"
                       >
                         {labels[displayStar]}
                       </motion.p>
                     )}
                   </AnimatePresence>
 
-                  {/* Optional review text — appears after star selected */}
+                  {/* Review text box — appears after any star selected */}
                   <AnimatePresence>
                     {selectedRating > 0 && (
                       <motion.div
+                        key="text-box"
                         initial={{ opacity: 0, height: 0 }}
                         animate={{ opacity: 1, height: 'auto' }}
                         exit={{ opacity: 0, height: 0 }}
@@ -428,14 +467,20 @@ export default function ReviewPage() {
                               : 'Help us understand what went wrong...'
                           }
                         />
+                        {selectedRating >= 4 && suggestions.length > 0 && (
+                          <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
+                            💡 Or pick a suggestion below and tap it to auto-fill
+                          </p>
+                        )}
                       </motion.div>
                     )}
                   </AnimatePresence>
 
-                  {/* ── SUBMIT BUTTON — only this triggers DB insert ──── */}
+                  {/* Submit button — ONLY this triggers DB insert */}
                   <AnimatePresence>
                     {selectedRating > 0 && (
                       <motion.div
+                        key="submit-area"
                         initial={{ opacity: 0, y: 10 }}
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0 }}
@@ -449,14 +494,12 @@ export default function ReviewPage() {
                         >
                           {isSubmitting ? (
                             <span className="flex items-center gap-2 justify-center">
-                              <Spinner />
-                              Submitting...
+                              <Spinner /> Submitting...
                             </span>
                           ) : (
                             '⭐ Submit Review'
                           )}
                         </button>
-
                         <p className="text-xs text-center text-gray-400 dark:text-gray-500 mt-3">
                           You can change your rating before submitting
                         </p>
@@ -469,17 +512,24 @@ export default function ReviewPage() {
             </AnimatePresence>
           </motion.div>
 
-          {/* ── 4★/5★: AI suggestions + Google link ─────────────────── */}
-          {showHighRating && (
+          {/* ── AI Suggestions (4/5★) ─────────────────────────────────────────
+              Appears immediately on star click (even before submit).
+              Pre-submit: clicking a card fills the textarea.
+              Post-submit: clicking a card copies text + Google button enabled.
+          ─────────────────────────────────────────────────────────────────── */}
+          {showSuggestions && (
             <ReviewSuggestions
+              key={`suggestions-${selectedRating}-${lang}`}
               suggestions={suggestions}
-              googleUrl={business?.google_review_url}
               loading={loadingAI}
+              googleUrl={isSubmitted ? business?.google_review_url : null}
+              onSelect={!isSubmitted ? handleSuggestionSelect : null}
+              preSubmit={!isSubmitted}
             />
           )}
 
-          {/* ── 1★-3★: Private feedback form ─────────────────────────── */}
-          {showLowRating && (
+          {/* ── 1-3★: Private feedback form (shows only after submit) ──────── */}
+          {showLowForm && (
             <PrivateFeedbackForm
               businessSlug={slug}
               businessId={business?.id}
