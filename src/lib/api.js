@@ -135,9 +135,10 @@ export async function recordScan(businessSlug) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// recordRating — inserts a star rating (no text feedback)
+// recordRating — inserts a submitted star rating with optional inline text
+// Called ONLY after the customer clicks "Submit Review"
 // ─────────────────────────────────────────────────────────────────────────────
-export async function recordRating(businessSlug, selectedRating) {
+export async function recordRating(businessSlug, selectedRating, reviewText = null) {
   console.log('[API] recordRating — slug:', businessSlug, '| rating:', selectedRating)
 
   if (!businessSlug) {
@@ -149,18 +150,23 @@ export async function recordRating(businessSlug, selectedRating) {
     return
   }
 
+  // Determine record type: use 'feedback' if text is provided, else 'rating'
+  const type = reviewText?.trim() ? 'feedback' : 'rating'
+
   try {
     await insertRow(
       {
         business_slug: businessSlug,
-        type: 'rating',
+        type,
         rating: selectedRating,
+        feedback: reviewText?.trim() || null,
         rated_at: new Date().toISOString(),
       },
       'recordRating'
     )
   } catch (e) {
     console.error('[API] recordRating error:', e.message)
+    throw e // re-throw so ReviewPage can show error toast
   }
 }
 
@@ -291,8 +297,14 @@ export function subscribeToReviews(businessSlug, onInsert) {
         filter: `business_slug=eq.${businessSlug}`,
       },
       (payload) => {
-        console.log('[API] Realtime INSERT on ratings:', payload.new)
-        onInsert(payload.new)
+        const row = payload.new
+        // ► ONLY trigger dashboard refresh for actual reviews, not scans
+        if (row.type === 'scan') {
+          console.log('[API] Realtime: scan event — skipping dashboard refresh')
+          return
+        }
+        console.log('[API] Realtime: new review/feedback row — refreshing dashboard:', row)
+        onInsert(row)
       }
     )
     .subscribe((status) => {

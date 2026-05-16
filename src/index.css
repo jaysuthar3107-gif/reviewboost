@@ -152,6 +152,20 @@
     filter: drop-shadow(0 0 8px rgba(251, 191, 36, 0.8));
   }
 
+  /* ── Star button for ReviewPage ──────────────────────────────────────────── */
+  .star-btn {
+    /* Large touch target for mobile */
+    @apply cursor-pointer select-none;
+    @apply transition-transform duration-150;
+    @apply hover:scale-125 active:scale-110;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+    padding: 4px 6px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
   .page-enter {
     animation: fadeIn 0.4s ease-out, slideUp 0.4s ease-out;
   }
